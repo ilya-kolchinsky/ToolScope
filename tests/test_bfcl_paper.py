@@ -562,3 +562,147 @@ def test_harness_results_markdown_and_versioned_copy(tmp_path):
     assert (frozen / "summary.csv").is_file()
     assert "weak-model" in (frozen / "harness_results.md").read_text()
 
+
+def test_save_results_exports_usage_prompt_tokens(tmp_path):
+    from bfcl_eval.evaluate import InstanceResult, RetrieverResult, aggregate
+    from bfcl_eval.report import save_results
+
+    rr = RetrieverResult(
+        name_acc=True,
+        exact_match=True,
+        ast_acc=True,
+        recall=1.0,
+        dcg=1.0,
+        ndcg=1.0,
+        gt_rank=1,
+        tool_names=["alpha"],
+        tokens=100,
+        compression_rate=0.9,
+        raw="",
+        predicted=ParsedToolCall(name="alpha", arguments={}),
+        error=None,
+        latency_ms=5.0,
+        prompt_tokens=220,
+    )
+    result = InstanceResult(
+        id="q1",
+        query="use alpha",
+        ground_truth_names=["alpha"],
+        baseline_name_acc=False,
+        baseline_exact_match=False,
+        baseline_ast_acc=False,
+        baseline_tokens=1000,
+        baseline_raw="",
+        baseline_pred=None,
+        baseline_error="parse_fail",
+        baseline_latency_ms=10.0,
+        baseline_prompt_tokens=16422,
+        retrievers={"ToolScope@10": rr},
+    )
+    metrics = aggregate([result], n_skipped=0)
+    assert metrics.mean_baseline_usage_prompt_tokens == 16422
+    assert metrics.n_baseline_usage_prompt_tokens == 1
+    assert metrics.retrievers["ToolScope@10"].mean_usage_prompt_tokens == 220
+
+    path = save_results(
+        [result],
+        metrics,
+        {"k": 10},
+        tmp_path,
+        model_name="toy-model",
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["instances"][0]["baseline"]["prompt_tokens"] == 16422
+    assert payload["instances"][0]["retrievers"]["ToolScope@10"]["prompt_tokens"] == 220
+    assert payload["metrics"]["mean_baseline_usage_prompt_tokens"] == 16422
+
+
+def test_harness_report_usage_section_and_analysis_preserve(tmp_path):
+    from bfcl_eval.evaluate import AggregateMetrics, RetrieverMetrics
+    from bfcl_eval.harness_report import render_harness_results, write_harness_results
+
+    metrics = {
+        "llama-3.2-3b-instruct": AggregateMetrics(
+            n=1,
+            n_skipped=0,
+            baseline_name_acc=0.0,
+            baseline_exact_match=0.0,
+            baseline_ast_acc=0.0,
+            mean_baseline_tokens=60051.0,
+            mean_baseline_latency_ms=20.0,
+            mean_baseline_usage_prompt_tokens=16422.0,
+            n_baseline_usage_prompt_tokens=1,
+            retrievers={
+                "ToolScope@10": RetrieverMetrics(
+                    name_acc=1.0,
+                    exact_match=0.5,
+                    ast_acc=0.5,
+                    recall=1.0,
+                    dcg=1.0,
+                    ndcg=1.0,
+                    mean_tokens=1362.0,
+                    mean_compression_rate=0.977,
+                    mean_latency_ms=5.0,
+                    delta_name_acc=1.0,
+                    delta_exact_match=0.5,
+                    delta_ast_acc=0.5,
+                    error_counts={},
+                    mean_usage_prompt_tokens=1970.0,
+                    n_usage_prompt_tokens=1,
+                ),
+            },
+        )
+    }
+    instances = {
+        "llama-3.2-3b-instruct": [
+            {
+                "id": "q1",
+                "query": "use alpha",
+                "ground_truth_names": ["alpha"],
+                "baseline": {
+                    "name_acc": False,
+                    "ast_acc": False,
+                    "tokens": 60051,
+                    "prompt_tokens": 16422,
+                    "error": "parse_fail",
+                },
+                "retrievers": {
+                    "ToolScope@10": {
+                        "name_acc": True,
+                        "ast_acc": True,
+                        "tokens": 1362,
+                        "prompt_tokens": 1970,
+                        "recall": 1.0,
+                        "ndcg": 1.0,
+                        "error": None,
+                    }
+                },
+            }
+        ]
+    }
+    md = render_harness_results(
+        metrics,
+        instances,
+        k=10,
+        catalog_size=443,
+        protocol="shared_catalog",
+    )
+    assert "Model-reported prompt lengths" in md
+    assert "16422" in md or "16,422" in md
+    assert "JSON chars" in md
+
+    path = tmp_path / "harness_results.md"
+    path.write_text(md + "\n## Analysis\n\nHand authored note.\n", encoding="utf-8")
+    write_harness_results(
+        path,
+        metrics,
+        instances,
+        k=10,
+        catalog_size=443,
+        protocol="shared_catalog",
+    )
+    out = path.read_text(encoding="utf-8")
+    assert "## Analysis" in out
+    assert "Hand authored note." in out
+    assert "Model-reported prompt lengths" in out
+

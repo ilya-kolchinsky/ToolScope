@@ -192,10 +192,19 @@ Frozen snapshot (git-tracked after a full run): `eval/paper/artifacts/`
 
 | File | Contents |
 |---|---|
-| `summary.csv` | Per (model × condition) metrics |
+| `summary.csv` | Per (model × condition) metrics (heuristic + usage prompt tokens) |
 | `table.md` | Name/AST accuracy + compression |
-| `harness_results.md` | McNemar, error taxonomy, flips |
+| `harness_results.md` | McNemar, error taxonomy, flips, model-reported prompt lengths |
 | `tool_name_collisions.json` | Catalog hazard report |
+
+Runtime traces (gitignored) under `eval/results/paper/local/`:
+
+| Path | Contents |
+|---|---|
+| `bfcl_eval_*.json` | Aggregates + per-instance traces (`tokens` heuristic, `prompt_tokens` usage) |
+| `checkpoints/*.jsonl` | Resume lines with `baseline_prompt_tokens` / retriever `prompt_tokens` |
+
+`finalize_local_artifacts.py` merges usage tokens from checkpoints into older result JSONs that omitted them, then regenerates artifacts.
 
 ## Troubleshooting
 
@@ -205,14 +214,17 @@ Frozen snapshot (git-tracked after a full run): `eval/paper/artifacts/`
 - Rebuild with `eval/local/scripts/build_image.sh --rebuild`.
 - Fallback: build `llama-server` natively on the host and adjust the Containerfile to copy the binary.
 
-**OOM on 70B baseline (443 tools)**
+**OOM / context pressure on full-catalogue baseline (443 tools)**
 
-- Default `context_size` is **32768** for all models in [`models.yaml`](models.yaml).
-- Reduce further or lower `n_gpu_layers` in `models.yaml` defaults if needed.
+- Configured `context_size` in [`models.yaml`](models.yaml): **32768** (3B/7B/8B), **65536** (Qwen3 32B), **131072** (Llama 3.3 70B).
+- The harness does **not** shrink the tool list to fit `n_ctx`. Heuristic catalogue size is ~60k tool-token equivalents; model-reported usage for SLM baselines is much lower (see `harness_results.md`).
+- Qwen3 / 70B baselines need the extended-context llama-server build (`eval/local/patches/llama_server_extended_ctx.patch`) so slots are not capped to `n_ctx_train`.
+- Instant baseline `api_fail` (~200–300 ms) usually means context overflow; use `rerun_baseline_local.sh` after raising `context_size`.
+- Lower `n_gpu_layers` in `models.yaml` defaults only if VRAM/unified memory is exhausted.
 
 **Tool-call smoke fails**
 
-- Check `podman logs toolscope-llama`.
+- Check `podman logs toolscope-llama` or `eval/local/.podman/llama-server.log` (`task.n_tokens`, `n_ctx_slot`, `truncated=`).
 - Qwen3 requires `--jinja` (set in `models.yaml`).
 - Bump `LLAMA_CPP_TAG` in [`container/Containerfile`](container/Containerfile) if chat templates are outdated.
 
@@ -225,3 +237,5 @@ Frozen snapshot (git-tracked after a full run): `eval/paper/artifacts/`
 Same as [`eval/paper/README.md`](../paper/README.md): shared catalog C=443, BM25 + ToolScope, LangGraph one-turn `bind_tools`. Config: [`eval/paper/bfcl_multiple.yaml`](../paper/bfcl_multiple.yaml).
 
 **K-ablation** (local runs): `toolscope.k_values: [5, 10, 20]` scores nested prefixes per retriever (`BM25@5`, `ToolScope@10`, …). Retrieve once at k_max=20; anchor k=10 is used for headline deltas in `harness_results.md`. Override via CLI: `--k-values 5 10 20`.
+
+**Failure handling (local GGUF):** condition-level `api_fail` is fail-closed; `parse_fail` means a response arrived but no valid tool call was parsed. Details and the usage-token table: [`eval/README.md`](../README.md) and [`../paper/artifacts/harness_results.md`](../paper/artifacts/harness_results.md).

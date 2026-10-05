@@ -39,6 +39,6 @@ BM25 / ToolScope columns are **@k=10** (`BM25@10`, `ToolScope@10` in the full ma
 | qwen3-32b | 45.0% | 55.5% | 55.0% |
 | llama-3.3-70b-instruct | 46.5% | 60.0% | 61.0% |
 
-Retrieval (identical across models): BM25 Recall@10 **97.0%** / NDCG **0.881**; ToolScope Recall@10 **98.5%** / NDCG **0.885**. Compression **97.7%** (~60,051 → ~1,362 prompt tokens at k=10).
+Retrieval (identical across models): BM25 Recall@10 **97.0%** / NDCG **0.881**; ToolScope Recall@10 **98.5%** / NDCG **0.885**. Compression **97.7%** uses the heuristic catalogue measure (~60,051 → ~1,362 tool-schema token-equivalents at k=10). Model-reported usage prompt tokens differ by model/`n_ctx` (see [harness_results.md](harness_results.md)).
 
-See [harness_results.md](harness_results.md) for the analysis (name/AST, McNemar, error taxonomy, flips). [table.md](table.md) and [summary.csv](summary.csv) are the compact matrix (includes k-ablation columns). Historical API-model results: [`../README.md`](../README.md). Follow-up experiments: [../../next-experiments.md](../../next-experiments.md).
+See [harness_results.md](harness_results.md) for the analysis (name/AST, McNemar, error taxonomy, flips, usage prompt lengths). [table.md](table.md) and [summary.csv](summary.csv) are the compact matrix (includes k-ablation columns). Historical API-model results: [`../README.md`](../README.md). Follow-up experiments: [../../next-experiments.md](../../next-experiments.md).

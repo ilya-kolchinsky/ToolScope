@@ -98,6 +98,56 @@ def _block(inst: dict, cond: str) -> dict:
     return (inst.get("retrievers") or {}).get(cond) or {}
 
 
+def _usage_prompt_token(inst: dict, cond: str) -> Optional[int]:
+    """Model-reported prompt tokens for a condition.
+
+    Supports nested save_results shape (``baseline.prompt_tokens``) and the
+    flat checkpoint shape (``baseline_prompt_tokens``).
+    """
+    if cond == "Baseline":
+        blk = inst.get("baseline") or {}
+        val = blk.get("prompt_tokens")
+        if val is None:
+            val = inst.get("baseline_prompt_tokens")
+    else:
+        val = (inst.get("retrievers") or {}).get(cond, {}).get("prompt_tokens")
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _usage_stats(
+    instances: List[dict], cond: str
+) -> Tuple[Optional[float], Optional[int], Optional[int], int]:
+    """Return (mean, min, max, n_reported) for usage prompt tokens."""
+    vals = [
+        v for v in (_usage_prompt_token(inst, cond) for inst in instances)
+        if v is not None
+    ]
+    if not vals:
+        return None, None, None, 0
+    return sum(vals) / len(vals), min(vals), max(vals), len(vals)
+
+
+def enrich_metrics_usage_from_instances(
+    metrics: AggregateMetrics, instances: List[dict]
+) -> AggregateMetrics:
+    """Fill usage-token aggregates from instance traces (mutates ``metrics``)."""
+    mean, _, _, n = _usage_stats(instances, "Baseline")
+    if n and not metrics.n_baseline_usage_prompt_tokens:
+        metrics.mean_baseline_usage_prompt_tokens = mean
+        metrics.n_baseline_usage_prompt_tokens = n
+    for rname, rm in metrics.retrievers.items():
+        r_mean, _, _, r_n = _usage_stats(instances, rname)
+        if r_n and not rm.n_usage_prompt_tokens:
+            rm.mean_usage_prompt_tokens = r_mean
+            rm.n_usage_prompt_tokens = r_n
+    return metrics
+
+
 def _pred_name(block: dict) -> Optional[str]:
     pred = block.get("predicted")
     if isinstance(pred, dict):
@@ -382,7 +432,7 @@ def render_harness_results(
                 tok_bits.append(f"{rn} ~{first.retrievers[rn].mean_tokens:,.0f}")
         lines.append("")
         lines.append(
-            f"Prompt tokens: baseline ~{base_tok:,.0f}"
+            f"Heuristic tool-schema tokens (JSON chars ÷ 4): baseline ~{base_tok:,.0f}"
             + (f" vs {', '.join(tok_bits)}" if tok_bits else "")
             + f" (~{_pct(compression)} compression). "
             "Latency is one-turn `bind_tools` only; tools are never executed."
@@ -397,6 +447,101 @@ def render_harness_results(
                     f"{_fmt_latency_ms(_percentile(xs, 0.95))} (baseline)."
                 )
         lines.append("")
+
+    # Model-reported usage.prompt_tokens (per model; may be missing on api_fail).
+    usage_anchor = [
+        c for c in ("Baseline", *(
+            x for x in (
+                _pick_retriever(retrievers, "BM25", k),
+                _pick_retriever(retrievers, "ToolScope", k),
+            ) if x
+        ))
+    ]
+    has_usage = any(
+        _usage_stats(all_instances.get(n, []), "Baseline")[3] > 0
+        or getattr(all_metrics[n], "n_baseline_usage_prompt_tokens", 0) > 0
+        for n in ordered
+    )
+    if has_usage and usage_anchor:
+        lines += [
+            "## Model-reported prompt lengths (usage)",
+            "",
+            "Two length measures are recorded. **Heuristic tool tokens** "
+            "(`tokens` / `mean_baseline_tokens`) equal "
+            "`⌊len(json.dumps(openai_tools)) / 4⌋` and are identical across "
+            "models for a given bound set — used for compression. "
+            "**Usage prompt tokens** (`prompt_tokens`) come from the "
+            "OpenAI-compatible `usage.prompt_tokens` / LangChain "
+            "`usage_metadata.input_tokens` field after chat+tools templating "
+            "and are model- and serving-specific.",
+            "",
+            "Full injection always *attempts* to bind all catalogue tools. "
+            "The harness does not truncate the tool list client-side. "
+            "HTTP / invoke exceptions are fail-closed as `api_fail` for that "
+            "condition only; successful responses with no parseable tool call "
+            "are `parse_fail`. Effective exposure still depends on the "
+            "configured llama.cpp slot context (`n_ctx`): when the serialized "
+            "catalogue exceeds the slot, actual usage counts fall well below "
+            "the heuristic catalogue size.",
+            "",
+            "| Model | Configured n_ctx | Heuristic baseline | "
+            + " | ".join(f"Usage mean {c}" for c in usage_anchor)
+            + " |",
+            "|---|---:|---:|" + "".join("---:|" for _ in usage_anchor),
+        ]
+        # Optional n_ctx hints from common paper slate (documentation only).
+        n_ctx_hints = {
+            "llama-3.2-3b-instruct": 32768,
+            "qwen2.5-7b-instruct": 32768,
+            "llama-3.1-8b-instruct": 32768,
+            "qwen3-32b": 65536,
+            "llama-3.3-70b-instruct": 131072,
+        }
+        for n in ordered:
+            insts = all_instances.get(n, [])
+            cells = []
+            for cond in usage_anchor:
+                mean, lo, hi, n_rep = _usage_stats(insts, cond)
+                if mean is None:
+                    # Fall back to aggregate metrics when instances lack the field.
+                    if cond == "Baseline":
+                        mean = getattr(
+                            all_metrics[n],
+                            "mean_baseline_usage_prompt_tokens",
+                            None,
+                        )
+                        n_rep = getattr(
+                            all_metrics[n],
+                            "n_baseline_usage_prompt_tokens",
+                            0,
+                        )
+                    elif cond in all_metrics[n].retrievers:
+                        rm = all_metrics[n].retrievers[cond]
+                        mean = getattr(rm, "mean_usage_prompt_tokens", None)
+                        n_rep = getattr(rm, "n_usage_prompt_tokens", 0)
+                if mean is None:
+                    cells.append("—")
+                elif lo is not None and hi is not None and cond == "Baseline":
+                    cells.append(
+                        f"{mean:,.0f} (n={n_rep}; {lo}–{hi})"
+                    )
+                else:
+                    cells.append(f"{mean:,.0f} (n={n_rep})")
+            ctx = n_ctx_hints.get(_slug(n))
+            ctx_s = f"{ctx:,}" if ctx else "—"
+            heur = f"{all_metrics[n].mean_baseline_tokens:,.0f}"
+            lines.append(
+                f"| {_display(n)} | {ctx_s} | {heur} | "
+                + " | ".join(cells)
+                + " |"
+            )
+        lines += [
+            "",
+            "Usage counts can be missing on `api_fail` rows (no successful "
+            "response metadata). Compression ratios continue to use the "
+            "heuristic catalogue measure so they stay comparable across models.",
+            "",
+        ]
 
     lines += [
         "## AST accuracy",
@@ -677,7 +822,21 @@ def write_harness_results(
     all_instances: Dict[str, List[dict]],
     **kwargs: Any,
 ) -> Path:
+    preserved = ""
+    if path.exists():
+        old = path.read_text(encoding="utf-8")
+        marker = "\n## Analysis\n"
+        if marker in old:
+            # Keep hand-authored analysis when regenerating the auto sections.
+            preserved = old[old.index(marker):]
     text = render_harness_results(all_metrics, all_instances, **kwargs)
+    if preserved:
+        cut = "\n## What this supports for the paper\n"
+        if cut in text:
+            text = text[: text.index(cut)].rstrip() + "\n"
+        text = text.rstrip() + "\n" + preserved
+        if not text.endswith("\n"):
+            text += "\n"
     path.write_text(text, encoding="utf-8")
     return path
 

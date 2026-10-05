@@ -79,6 +79,9 @@ class RetrieverMetrics:
     delta_exact_match: float
     delta_ast_acc: float
     error_counts: Dict[str, int]
+    # Model-reported usage.prompt_tokens (None when never observed).
+    mean_usage_prompt_tokens: Optional[float] = None
+    n_usage_prompt_tokens: int = 0
 
 
 @dataclass
@@ -91,6 +94,9 @@ class AggregateMetrics:
     mean_baseline_tokens: float
     mean_baseline_latency_ms: float
     retrievers: Dict[str, RetrieverMetrics]
+    # Model-reported usage.prompt_tokens for full-catalog binding.
+    mean_baseline_usage_prompt_tokens: Optional[float] = None
+    n_baseline_usage_prompt_tokens: int = 0
 
 
 # ── Metric computation ──────────────────────────────────────────────────────
@@ -432,6 +438,13 @@ def _error_counts(errors: List[Optional[str]]) -> Dict[str, int]:
     return counts
 
 
+def _mean_optional_ints(vals: List[Optional[int]]) -> Tuple[Optional[float], int]:
+    xs = [int(v) for v in vals if v is not None]
+    if not xs:
+        return None, 0
+    return sum(xs) / len(xs), len(xs)
+
+
 def aggregate(results: List[InstanceResult], n_skipped: int) -> AggregateMetrics:
     n = len(results)
     empty_retrievers: Dict[str, RetrieverMetrics] = {}
@@ -448,6 +461,9 @@ def aggregate(results: List[InstanceResult], n_skipped: int) -> AggregateMetrics
     b_ast    = sum(getattr(r, "baseline_ast_acc", r.baseline_exact_match) for r in results) / n
     b_tokens = sum(r.baseline_tokens      for r in results) / n
     b_lat    = sum(getattr(r, "baseline_latency_ms", 0.0) for r in results) / n
+    b_usage_mean, b_usage_n = _mean_optional_ints(
+        [getattr(r, "baseline_prompt_tokens", None) for r in results]
+    )
 
     rnames = list((results[0].retrievers or {}).keys())
     retriever_metrics: Dict[str, RetrieverMetrics] = {}
@@ -460,6 +476,9 @@ def aggregate(results: List[InstanceResult], n_skipped: int) -> AggregateMetrics
         r_name_acc = sum(r.name_acc    for r in rr) / nr
         r_exact    = sum(r.exact_match for r in rr) / nr
         r_ast      = sum(getattr(r, "ast_acc", r.exact_match) for r in rr) / nr
+        r_usage_mean, r_usage_n = _mean_optional_ints(
+            [getattr(r, "prompt_tokens", None) for r in rr]
+        )
         retriever_metrics[rname] = RetrieverMetrics(
             name_acc=r_name_acc,
             exact_match=r_exact,
@@ -474,6 +493,8 @@ def aggregate(results: List[InstanceResult], n_skipped: int) -> AggregateMetrics
             delta_exact_match=r_exact - b_exact,
             delta_ast_acc=r_ast - b_ast,
             error_counts=_error_counts([getattr(r, "error", None) for r in rr]),
+            mean_usage_prompt_tokens=r_usage_mean,
+            n_usage_prompt_tokens=r_usage_n,
         )
 
     return AggregateMetrics(
@@ -485,4 +506,6 @@ def aggregate(results: List[InstanceResult], n_skipped: int) -> AggregateMetrics
         mean_baseline_tokens=b_tokens,
         mean_baseline_latency_ms=b_lat,
         retrievers=retriever_metrics,
+        mean_baseline_usage_prompt_tokens=b_usage_mean,
+        n_baseline_usage_prompt_tokens=b_usage_n,
     )

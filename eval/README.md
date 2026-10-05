@@ -154,10 +154,21 @@ Every condition (baseline and each retriever) is scored the same way:
 | **AST accuracy** | Did name **and** arguments match `possible_answer`? (optional args may be omitted) |
 | **Exact match** | Stricter name + required-arg equality used by the older pool protocol |
 | **Recall@k / NDCG@k** | Did retrieval surface the ground-truth tool, and how high? |
-| **Compression** | `1 − tokens(top-k) / tokens(full catalog)` |
+| **Heuristic tool tokens** | `⌊len(json.dumps(openai_tools)) / 4⌋` — catalogue-size proxy used for compression |
+| **Usage prompt tokens** | Model-reported `usage.prompt_tokens` / LangChain `input_tokens` after templating (per model) |
+| **Compression** | `1 − heuristic_tokens(top-k) / heuristic_tokens(full catalog)` |
 | **Latency** | One-turn generate; tools are never executed |
 
 Errors are labelled `retrieval_miss`, `wrong_tool`, `bad_args`, `no_call`, `parse_fail`, or `api_fail`. A failed API call on **one** condition (baseline, BM25, or ToolScope) is fail-closed for that condition only; the others still run.
+
+### Oversized prompts, truncation, and failures
+
+- The harness **always attempts** to bind the tools selected for the condition (full catalogue for baseline; top-k for retrievers). It does **not** truncate the tool list client-side to fit a context window.
+- **Heuristic tokens** measure the serialized tool JSON offered to the model and are identical across models for the same bound set (~60,051 for C=443).
+- **Usage prompt tokens** are whatever the OpenAI-compatible server reports after chat+tools templating. They are model- and `n_ctx`-specific and are written to checkpoints (`baseline_prompt_tokens` / `prompt_tokens`) and to result JSON (`baseline.prompt_tokens`, `retrievers.*.prompt_tokens`).
+- If the HTTP / LangGraph invoke raises (timeout, connection, server reject), that condition is scored **`api_fail`** (fail-closed). Other conditions on the same query still run.
+- If the request succeeds but no valid tool call can be parsed, the condition is **`parse_fail`**. On local GGUF baselines with `n_ctx` smaller than the catalogue heuristic size, high `parse_fail` rates should be read together with the usage prompt-token table (effective exposure may be far below the heuristic catalogue size).
+- Large-model baselines that need the full catalogue (Qwen3 32B, Llama 3.3 70B) use extended llama-server slot contexts in [`eval/local/models.yaml`](local/models.yaml) so actual usage can fit.
 
 Deltas are retriever − baseline, in percentage points.
 
@@ -167,9 +178,9 @@ Deltas are retriever − baseline, in percentage points.
 
 Under `eval/results/` (or `eval/results/paper/` for the paper YAML):
 
-- `bfcl_eval_{model}_{timestamp}.json` — config, aggregates, per-instance traces
-- `checkpoints/` — JSONL resume files (protocol and catalog size are part of the key, so a smoke run cannot resume into a full run)
-- Paper YAML (`eval/paper/bfcl_multiple.yaml`) also writes `summary.csv`, `table.md`, `harness_results.md`, and `tool_name_collisions.json`. A full (non-dry, unsampled) run copies the first three into [`eval/paper/artifacts/`](paper/artifacts/) as the v1.0 snapshot.
+- `bfcl_eval_{model}_{timestamp}.json` — config, aggregates, per-instance traces (includes heuristic `tokens` and model-reported `prompt_tokens` when the server returned usage metadata)
+- `checkpoints/` — JSONL resume files (protocol and catalog size are part of the key, so a smoke run cannot resume into a full run); each line stores `baseline_prompt_tokens` and per-retriever `prompt_tokens`
+- Paper YAML (`eval/paper/bfcl_multiple.yaml`) also writes `summary.csv`, `table.md`, `harness_results.md`, and `tool_name_collisions.json`. A full (non-dry, unsampled) run copies the first three into [`eval/paper/artifacts/`](paper/artifacts/) as the v1.0 snapshot. `harness_results.md` includes a **model-reported prompt lengths** table when usage tokens are present.
 
 ---
 

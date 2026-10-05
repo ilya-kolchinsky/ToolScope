@@ -82,7 +82,23 @@ Selection gain shrinks as baseline name accuracy rises. McNemar is exact two-sid
 | llama-3.3-70b-instruct | ToolScope@10 | 91.0% | 61.0% | +12.0 pp | 98.5% | 0.885 | 14.5 s |
 | llama-3.3-70b-instruct | ToolScope@20 | 91.5% | 60.5% | +12.5 pp | 99.5% | 0.888 | 18.2 s |
 
-Prompt tokens: baseline ~60,051 vs BM25@5 ~699, BM25@10 ~1,401, BM25@20 ~2,789, ToolScope@5 ~683, ToolScope@10 ~1,362, ToolScope@20 ~2,700 (~97.7% compression). Latency is one-turn `bind_tools` only; tools are never executed.
+Heuristic tool-schema tokens (JSON chars ÷ 4): baseline ~60,051 vs BM25@5 ~699, BM25@10 ~1,401, BM25@20 ~2,789, ToolScope@5 ~683, ToolScope@10 ~1,362, ToolScope@20 ~2,700 (~97.7% compression). Latency is one-turn `bind_tools` only; tools are never executed.
+
+## Model-reported prompt lengths (usage)
+
+Two length measures are recorded. **Heuristic tool tokens** (`tokens` / `mean_baseline_tokens`) equal `⌊len(json.dumps(openai_tools)) / 4⌋` and are identical across models for a given bound set — used for compression. **Usage prompt tokens** (`prompt_tokens`) come from the OpenAI-compatible `usage.prompt_tokens` / LangChain `usage_metadata.input_tokens` field after chat+tools templating and are model- and serving-specific.
+
+Full injection always *attempts* to bind all catalogue tools. The harness does not truncate the tool list client-side. HTTP / invoke exceptions are fail-closed as `api_fail` for that condition only; successful responses with no parseable tool call are `parse_fail`. Effective exposure still depends on the configured llama.cpp slot context (`n_ctx`): when the serialized catalogue exceeds the slot, actual usage counts fall well below the heuristic catalogue size.
+
+| Model | Configured n_ctx | Heuristic baseline | Usage mean Baseline | Usage mean BM25@10 | Usage mean ToolScope@10 |
+|---|---:|---:|---:|---:|---:|
+| llama-3.2-3b-instruct | 32,768 | 60,051 | 16,424 (n=199; 16411–16454) | 2,018 (n=189) | 1,951 (n=188) |
+| llama-3.1-8b-instruct | 32,768 | 60,051 | 16,424 (n=200; 16411–16454) | 2,022 (n=200) | 1,963 (n=200) |
+| qwen2.5-7b-instruct | 32,768 | 60,051 | 28,363 (n=200; 28349–28399) | 1,560 (n=200) | 1,512 (n=200) |
+| qwen3-32b | 65,536 | 60,051 | 61,115 (n=199; 61101–61151) | 1,554 (n=27) | 1,534 (n=27) |
+| llama-3.3-70b-instruct | 131,072 | 60,051 | 81,960 (n=200; 81947–81990) | 2,009 (n=118) | 1,972 (n=118) |
+
+Usage counts can be missing on `api_fail` rows (no successful response metadata). Compression ratios continue to use the heuristic catalogue measure so they stay comparable across models.
 
 ## AST accuracy
 
@@ -289,7 +305,7 @@ The deployment implication is concrete. An 8B model with retrieval (92.0% name a
 
 Monolithic injection does not fail uniformly. The error taxonomy reveals three tiers of breakdown:
 
-**Parse collapse (3B–8B Llama).** Llama 3.2 3B and Llama 3.1 8B achieve 2.5% and 6.0% baseline name accuracy. The dominant error is `parse_fail` — 183 and 161 of 200 instances respectively — meaning the model often produces no valid tool call when forced to process ~60k tokens of tool definitions. The agent is effectively non-functional despite having access to every tool in the registry. Retrieval restores operability: name accuracy jumps to ~85–92%, and `parse_fail` drops to zero.
+**Parse collapse (3B–8B Llama).** Llama 3.2 3B and Llama 3.1 8B achieve 2.5% and 6.0% baseline name accuracy. The dominant error is `parse_fail` — 183 and 161 of 200 instances respectively. The harness offers the full ~60,051-heuristic-token catalogue, but model-reported usage under `n_ctx=32,768` is only ~16.4k prompt tokens — so these failures reflect context pressure / incomplete effective exposure, not unconstrained reading of all 443 schemas. Retrieval restores operability: name accuracy jumps to ~85–92%, and `parse_fail` drops to zero.
 
 **Wrong-tool saturation (7B).** Qwen2.5 7B baseline is partially capable (40% name accuracy) but commits 110 `wrong_tool` errors — more than half of all failures. The model calls *something*, but rarely the right function among 443 candidates. ToolScope@10 cuts wrong-tool errors to 23; the +47 pp gain is almost entirely better **selection**, not better arguments.
 

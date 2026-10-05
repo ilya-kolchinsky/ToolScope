@@ -257,6 +257,7 @@ def save_results(
                 "exact_match": r.baseline_exact_match,
                 "ast_acc": getattr(r, "baseline_ast_acc", r.baseline_exact_match),
                 "tokens": r.baseline_tokens,
+                "prompt_tokens": getattr(r, "baseline_prompt_tokens", None),
                 "predicted": _pred(r.baseline_pred),
                 "error": getattr(r, "baseline_error", None),
                 "latency_ms": getattr(r, "baseline_latency_ms", 0.0),
@@ -271,6 +272,7 @@ def save_results(
                     "ndcg": rr.ndcg,
                     "gt_rank": rr.gt_rank,
                     "tokens": rr.tokens,
+                    "prompt_tokens": getattr(rr, "prompt_tokens", None),
                     "compression_rate": rr.compression_rate,
                     "tool_names": rr.tool_names,
                     "predicted": _pred(rr.predicted),
@@ -348,7 +350,15 @@ def write_paper_artifacts(
             "ast_acc": getattr(m, "baseline_ast_acc", m.baseline_exact_match),
             "recall_at_k": "",
             "ndcg_at_k": "",
+            # Heuristic catalogue size (JSON chars // 4); compression uses this.
             "mean_prompt_tokens": m.mean_baseline_tokens,
+            # Model-reported usage.prompt_tokens when available.
+            "mean_usage_prompt_tokens": getattr(
+                m, "mean_baseline_usage_prompt_tokens", None
+            ),
+            "n_usage_prompt_tokens": getattr(
+                m, "n_baseline_usage_prompt_tokens", 0
+            ),
             "compression": 0.0,
             "mean_latency_ms": getattr(m, "mean_baseline_latency_ms", 0.0),
         })
@@ -362,6 +372,10 @@ def write_paper_artifacts(
                 "recall_at_k": rm.recall,
                 "ndcg_at_k": rm.ndcg,
                 "mean_prompt_tokens": rm.mean_tokens,
+                "mean_usage_prompt_tokens": getattr(
+                    rm, "mean_usage_prompt_tokens", None
+                ),
+                "n_usage_prompt_tokens": getattr(rm, "n_usage_prompt_tokens", 0),
                 "compression": rm.mean_compression_rate,
                 "mean_latency_ms": getattr(rm, "mean_latency_ms", 0.0),
             })
@@ -369,6 +383,7 @@ def write_paper_artifacts(
     fieldnames = [
         "model", "condition", "n", "name_acc", "ast_acc",
         "recall_at_k", "ndcg_at_k", "mean_prompt_tokens",
+        "mean_usage_prompt_tokens", "n_usage_prompt_tokens",
         "compression", "mean_latency_ms",
     ]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:

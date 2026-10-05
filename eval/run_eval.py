@@ -365,8 +365,10 @@ def _load_metrics_from_json(path: Path) -> AggregateMetrics:
             delta_exact_match=rm["delta_exact_match"],
             delta_ast_acc=rm.get("delta_ast_acc", 0.0),
             error_counts=rm.get("error_counts", {}),
+            mean_usage_prompt_tokens=rm.get("mean_usage_prompt_tokens"),
+            n_usage_prompt_tokens=int(rm.get("n_usage_prompt_tokens") or 0),
         )
-    return AggregateMetrics(
+    metrics = AggregateMetrics(
         n=m["n"],
         n_skipped=m["n_skipped"],
         baseline_name_acc=m["baseline_name_acc"],
@@ -375,7 +377,17 @@ def _load_metrics_from_json(path: Path) -> AggregateMetrics:
         mean_baseline_tokens=m["mean_baseline_tokens"],
         mean_baseline_latency_ms=m.get("mean_baseline_latency_ms", 0.0),
         retrievers=retrievers,
+        mean_baseline_usage_prompt_tokens=m.get("mean_baseline_usage_prompt_tokens"),
+        n_baseline_usage_prompt_tokens=int(
+            m.get("n_baseline_usage_prompt_tokens") or 0
+        ),
     )
+    # Older result JSONs omit usage aggregates; recompute from instance traces.
+    if metrics.n_baseline_usage_prompt_tokens == 0:
+        from eval.bfcl_eval.harness_report import enrich_metrics_usage_from_instances
+
+        enrich_metrics_usage_from_instances(metrics, data.get("instances") or [])
+    return metrics
 
 
 def _best_result_json(output_dir: Path, model_name: str) -> Path | None:

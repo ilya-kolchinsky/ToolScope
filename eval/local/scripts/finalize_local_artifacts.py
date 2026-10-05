@@ -44,7 +44,67 @@ def _best_json(output_dir: Path, model_id: str) -> Path | None:
     return best
 
 
+def _latest_checkpoint(model_id: str) -> Path | None:
+    slug = model_id.split("/")[-1]
+    ckpt_dir = RESULTS_DIR / "checkpoints"
+    if not ckpt_dir.is_dir():
+        return None
+    candidates = sorted(
+        ckpt_dir.glob(f"{slug}_*.jsonl"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+def _enrich_instances_from_checkpoint(
+    model_id: str, instances: list[dict]
+) -> list[dict]:
+    """Copy usage prompt_tokens from checkpoint JSONL into nested instance dicts.
+
+    Older ``bfcl_eval_*.json`` exports omitted ``prompt_tokens`` even though
+    checkpoints recorded ``baseline_prompt_tokens`` / retriever ``prompt_tokens``.
+    """
+    ckpt = _latest_checkpoint(model_id)
+    if ckpt is None or not instances:
+        return instances
+    by_id: dict[str, dict] = {}
+    with ckpt.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            rid = row.get("id")
+            if rid:
+                by_id[str(rid)] = row
+    if not by_id:
+        return instances
+
+    enriched = 0
+    for inst in instances:
+        row = by_id.get(str(inst.get("id") or ""))
+        if not row:
+            continue
+        base = inst.setdefault("baseline", {})
+        if base.get("prompt_tokens") is None and row.get("baseline_prompt_tokens") is not None:
+            base["prompt_tokens"] = row["baseline_prompt_tokens"]
+            enriched += 1
+        rr_out = inst.setdefault("retrievers", {})
+        for rname, rr in (row.get("retrievers") or {}).items():
+            dst = rr_out.setdefault(rname, {})
+            if dst.get("prompt_tokens") is None and rr.get("prompt_tokens") is not None:
+                dst["prompt_tokens"] = rr["prompt_tokens"]
+    if enriched:
+        print(f"  {model_id}: enriched usage prompt_tokens from {ckpt.name} ({enriched} baselines)")
+    return instances
+
+
 def _load_all(cfg_path: Path) -> tuple[dict, dict, list]:
+    from eval.bfcl_eval.harness_report import enrich_metrics_usage_from_instances
     from eval.run_eval import _load_metrics_from_json
 
     cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
@@ -58,9 +118,13 @@ def _load_all(cfg_path: Path) -> tuple[dict, dict, list]:
         if path is None:
             continue
         metrics = _load_metrics_from_json(path)
-        all_metrics[mid] = metrics
         payload = json.loads(path.read_text(encoding="utf-8"))
-        all_instances[mid] = payload.get("instances") or []
+        instances = _enrich_instances_from_checkpoint(
+            mid, payload.get("instances") or []
+        )
+        enrich_metrics_usage_from_instances(metrics, instances)
+        all_metrics[mid] = metrics
+        all_instances[mid] = instances
         sha = hashlib.sha256(path.read_bytes()).hexdigest()
         manifest_rows.append((mid, path.name, sha, metrics.n))
 
@@ -232,6 +296,13 @@ def main() -> int:
     )
 
     from eval.bfcl_eval.report import write_paper_artifacts
+
+    # Seed live harness_results with the versioned copy so hand-authored
+    # ``## Analysis`` is preserved across regenerate (see write_harness_results).
+    ver_hr = VERSIONED_DIR / "harness_results.md"
+    live_hr = RESULTS_DIR / "harness_results.md"
+    if ver_hr.is_file():
+        live_hr.write_text(ver_hr.read_text(encoding="utf-8"), encoding="utf-8")
 
     write_paper_artifacts(
         all_metrics=all_metrics,

@@ -29,7 +29,7 @@ ToolScope all draw from C.
 
 | Condition | What the model can call |
 |---|---|
-| **Baseline** | All of C (~60k prompt tokens) |
+| **Baseline** | All of C (~60,051 **heuristic** tool-schema tokens) |
 | **BM25@k** | Top-k from C (sparse lexical retrieval) |
 | **ToolScope@k** | Top-k from C via `ToolSelector` (LangChain adapter, MiniLM-L6-v2) |
 
@@ -43,16 +43,21 @@ Retrieval metrics (Recall@k, NDCG@k) are identical across models for a given ret
 
 - **Name accuracy** — was a ground-truth function named? (selection headline)
 - **AST accuracy** — do arguments match BFCL `possible_answer`?
-- **Compression** — token reduction vs baseline
+- **Compression** — heuristic tool-token reduction vs baseline (`JSON chars ÷ 4`)
+- **Usage prompt tokens** — model-reported lengths after templating (see `harness_results.md`)
 
 If the provider rejects a call for one condition, that condition is scored fail-closed
-(`api_fail`). Other conditions on the same query still run.
+(`api_fail`). Other conditions on the same query still run. The harness does not truncate
+the bound tool list client-side; effective full-catalogue exposure still depends on each
+model’s configured llama.cpp `n_ctx` (32,768 for 3B/7B/8B; 65,536 for Qwen3 32B; 131,072
+for Llama 3.3 70B). See [`eval/README.md`](../README.md) for the full oversized /
+`parse_fail` / `api_fail` handling notes.
 
 ---
 
 ## Models (v1.0 matrix)
 
-Five GGUF models (Q4_K_M), served via llama.cpp on DGX Spark:
+Five GGUF models served via llama.cpp on DGX Spark (Q8_0 for 3B/7B; Q4_K_M for 8B–70B):
 
 | Tier | Models | Role |
 |---|---|---|
